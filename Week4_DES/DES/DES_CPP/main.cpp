@@ -9,15 +9,13 @@
 #include <iomanip>
 #include <string>
 #include <chrono>
-#include <random>
-#include <ctime>
 
 static void benchmarkSpeed() {
     std::cout << "\n  [*] Do toc do DES...\n";
     const int N = 50000;
     auto t0 = std::chrono::steady_clock::now();
     volatile uint64_t dummy = 0;
-    for (int i = 0; i < N; i++) dummy ^= H((uint32_t)i);
+    for (int i = 0; i < N; i++) dummy ^= H((uint64_t)i);
     double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now()-t0).count();
     double speed = N / elapsed;
     std::cout << "  Toc do DES       : "
@@ -26,8 +24,8 @@ static void benchmarkSpeed() {
               << std::setprecision(1) << (double)NUM_CHAINS*CHAIN_LENGTH/speed << "s\n";
 }
 
-static void doAttack(uint32_t targetIdx,
-                     const std::unordered_map<uint32_t,uint32_t>& table)
+static void doAttack(uint64_t targetIdx,
+                     const std::unordered_map<uint64_t,uint64_t>& table)
 {
     uint64_t targetCipher = H(targetIdx);
     std::cout << "\n" << std::string(65,'=') << "\n";
@@ -85,27 +83,25 @@ static void showRealWorld() {
     std::cout << std::string(65,'=') << "\n";
 }
 
-static void demoAuto(const std::unordered_map<uint32_t,uint32_t>& table) {
-    std::mt19937 rng((uint32_t)time(nullptr));
-    std::uniform_int_distribution<uint32_t> dist(0,(uint32_t)(KEY_SPACE-1));
+static void demoAuto(const std::unordered_map<uint64_t,uint64_t>& table) {
     while (true) {
-        doAttack(dist(rng), table);
+        doAttack(randomKeyFromBuiltChains(), table);
         std::cout << "\n  Chay lai? (y/n): ";
         char c; std::cin >> c;
         if (c!='y' && c!='Y') break;
     }
 }
 
-static void demoManual(const std::unordered_map<uint32_t,uint32_t>& table) {
+static void demoManual(const std::unordered_map<uint64_t,uint64_t>& table) {
     while (true) {
         std::cout << "\n  Nhap key (0 -> " << (KEY_SPACE-1) << ", vd: 12345 hoac 0xABCD): ";
         std::string raw; std::cin >> raw;
-        uint32_t keyIdx = 0;
+        uint64_t keyIdx = 0;
         try {
             if (raw.size()>2 && raw[0]=='0' && (raw[1]=='x'||raw[1]=='X'))
-                keyIdx = (uint32_t)std::stoul(raw,nullptr,16);
+                keyIdx = std::stoull(raw,nullptr,16);
             else
-                keyIdx = (uint32_t)std::stoul(raw);
+                keyIdx = std::stoull(raw);
         } catch (...) { std::cout << "  Key khong hop le!\n"; continue; }
         doAttack(keyIdx, table);
         std::cout << "\n  Nhap key khac? (y/n): ";
@@ -123,15 +119,21 @@ int main() {
     benchmarkSpeed();
 
     std::cout << "\n  Menu:\n";
-    std::cout << "  1. Demo tu dong      (crack key ngau nhien)\n";
-    std::cout << "  2. Nhap key thu cong (0 -> " << (KEY_SPACE-1) << ")\n";
-    std::cout << "  3. Xem thong tin thuc te ngoai doi\n";
-    std::cout << "\n  Chon (1/2/3): ";
+    std::cout << "  1. Crack demo tu dong       (load bang co san neu co)\n";
+    std::cout << "  2. Crack key thu cong       (0 -> " << (KEY_SPACE-1) << ")\n";
+    std::cout << "  3. Precompute/load table    (giong buoc tao bang cua crack.sh)\n";
+    std::cout << "  4. Xem thong tin thuc te ngoai doi\n";
+    std::cout << "\n  Chon (1/2/3/4): ";
 
-    int choice; std::cin >> choice;
-    if (choice==3) { showRealWorld(); return 0; }
+    int choice = 0;
+    if (!(std::cin >> choice)) {
+        std::cout << "\n  Khong doc duoc lua chon.\n";
+        return 1;
+    }
+    if (choice==4) { showRealWorld(); return 0; }
 
-    auto table = buildTable();
+    auto table = loadOrBuildTable();
+    if (choice==3) return 0;
     if (choice==2) demoManual(table);
     else           demoAuto(table);
     return 0;

@@ -53,10 +53,11 @@ static const int SBOX[8][4][16] = {
 static inline int getBit64(uint64_t block, int b) { return (block >> (64 - b)) & 1; }
 static inline int getBit32(uint32_t block, int b) { return (block >> (32 - b)) & 1; }
 
-void indexToKey(uint32_t idx, uint8_t out[8]) {
-    out[0]=(idx>>24)&0xFF; out[1]=(idx>>16)&0xFF;
-    out[2]=(idx>> 8)&0xFF; out[3]=idx&0xFF;
-    out[4]=0xAA; out[5]=0xBB; out[6]=0xCC; out[7]=0xDD;
+void indexToKey(uint64_t idx, uint8_t out[8]) {
+    out[0]=(idx>>48)&0xFF; out[1]=(idx>>40)&0xFF;
+    out[2]=(idx>>32)&0xFF; out[3]=(idx>>24)&0xFF;
+    out[4]=(idx>>16)&0xFF; out[5]=(idx>> 8)&0xFF;
+    out[6]=idx&0xFF;       out[7]=0xDD;
 }
 
 KeySchedule buildKeySchedule(uint8_t key[8]) {
@@ -115,7 +116,7 @@ uint64_t desEncrypt(uint64_t plain, const KeySchedule& ks) {
     return cipher;
 }
 
-uint64_t H(uint32_t keyIdx) {
+uint64_t H(uint64_t keyIdx) {
     uint8_t key[8];
     indexToKey(keyIdx, key);
     KeySchedule ks = buildKeySchedule(key);
