@@ -1,348 +1,284 @@
-# DES Rainbow Table Attack — C++ Version
+# DES Rainbow Table Attack - C++ / CUDA
 
-> **Mục tiêu học thuật:** Minh họa tấn công *chosen-plaintext* dùng Rainbow Table lên thuật toán DES,
-> giải thích vì sao DES bị khai tử năm 2001 và thay bằng AES.
+Project nay minh hoa tan cong DES chosen-plaintext bang rainbow table. Ban hien tai duoc toi uu cho bang lon gan 20 GiB, build bang CUDA neu co GPU NVIDIA, va lookup bang sorted vector de giam RAM hon so voi `unordered_map`.
 
----
+Day la demo hoc thuat, khong phai cong cu crack production.
 
-## Cấu trúc thư mục
+## Trang thai hien tai
 
+Config mac dinh trong `config.h`:
+
+```cpp
+static constexpr int      KEY_BITS     = 36;
+static constexpr uint64_t KEY_SPACE    = 1ULL << KEY_BITS;
+static constexpr int      CHAIN_LENGTH = 256;
+static constexpr int      NUM_CHAINS   = 1342177280;
+static constexpr uint64_t PLAINTEXT    = 0x1122334455667788ULL;
 ```
+
+Y nghia:
+
+| Thong so | Gia tri |
+|---|---:|
+| Key space | 2^36 keys |
+| Chain length | 256 |
+| So chain | 1,342,177,280 |
+| File table raw | ~20.00 GiB |
+| Kieu table trong RAM | `vector<pair<endpoint,start>>` da sort |
+| Lookup endpoint | binary search bang `std::lower_bound` |
+
+Luu y RAM: file table ~20 GiB nhung khi build/sort/load van can RAM lon. Nen dung may co toi thieu 32 GiB RAM, tot hon la 64 GiB+.
+
+## Cau truc file
+
+```text
 DES_CPP/
-├── config.h            ← Cấu hình: KEY_BITS, CHAIN_LENGTH, NUM_CHAINS, PLAINTEXT
-├── des.h               ← Khai báo: KeySchedule, indexToKey, desEncrypt, H()
-├── des.cpp             ← Cài đặt DES (IP, S-box, key schedule, Feistel 16 round)
-├── rainbow_table.h     ← Khai báo: R(), build/load table, crack()
-├── rainbow_table.cpp   ← Xây bảng, lưu/load bảng, tra bảng tìm key
-├── gpu_builder.h       ← Interface backend GPU
-├── gpu_builder_stub.cpp← CPU fallback khi không build CUDA
-├── cuda_rainbow.cu     ← CUDA backend sinh chain trên GPU
-├── build_cpu.ps1       ← Build CPU trên Windows
-├── build_cuda.ps1      ← Build CUDA trên Windows khi có nvcc
-├── main.cpp            ← Menu, demo tự động, nhập key thủ công, benchmark
-└── README.md           ← Tài liệu này
+|-- config.h             # Cau hinh KEY_BITS, CHAIN_LENGTH, NUM_CHAINS
+|-- des.h / des.cpp      # DES thuan C++
+|-- rainbow_table.h      # API rainbow table
+|-- rainbow_table.cpp    # Build, save/load, sort, crack
+|-- gpu_builder.h        # Interface GPU backend
+|-- gpu_builder_stub.cpp # CPU fallback khi build khong CUDA
+|-- cuda_rainbow.cu      # CUDA kernel sinh chain
+|-- main.cpp             # Menu va demo
+|-- build_cpu.ps1        # Build CPU tren Windows
+|-- build_cuda.ps1       # Build CUDA tren Windows
+|-- README.md
 ```
 
----
+## Build
 
-## Hướng dẫn cài đặt & biên dịch
+### CPU
 
-### Yêu cầu
-- **Compiler:** GCC 9+ hoặc Clang 10+ (hỗ trợ C++17)
-- **Windows:** Tải MinGW-w64 tại [winlibs.com](https://winlibs.com/) → giải nén → thêm `bin/` vào PATH
-- **Linux/macOS:** `sudo apt install g++` hoặc `brew install gcc`
-- **CUDA GPU backend:** NVIDIA driver + CUDA Toolkit có `nvcc`
-
-### Biên dịch
-
-```bash
-# Windows (PowerShell hoặc CMD)
+```powershell
 .\build_cpu.ps1
-
-# Windows CUDA
-.\build_cuda.ps1
-
-# Linux CPU
-g++ -O3 -std=c++17 -o rainbow_attack main.cpp des.cpp rainbow_table.cpp gpu_builder_stub.cpp -pthread
-
-# Linux CUDA
-nvcc -O3 -std=c++17 -DUSE_CUDA -o rainbow_attack_cuda main.cpp des.cpp rainbow_table.cpp cuda_rainbow.cu
-```
-
-> **Flag `-O3`** bật tối ưu hóa tối đa → nhanh gấp ~3–5x so với không có flag.
-
-### Chạy
-
-```bash
-# Windows
 .\rainbow_attack.exe
+```
+
+CPU build dung `gpu_builder_stub.cpp`, nen build table rat cham voi config 20 GiB. CPU build phu hop de test compile/logic, khong phu hop de precompute bang lon.
+
+### CUDA
+
+Can NVIDIA driver + CUDA Toolkit co `nvcc` trong PATH.
+
+```powershell
+nvcc --version
+.\build_cuda.ps1
 .\rainbow_attack_cuda.exe
-
-# Linux / macOS
-./rainbow_attack
-./rainbow_attack_cuda
 ```
 
----
+Neu build dung CUDA, luc chay chuong trinh se hien:
 
-## Cài CUDA Toolkit / nvcc trên Ubuntu
-
-Driver NVIDIA chỉ giúp máy nhận GPU. Để build file `.cu`, cần CUDA Toolkit có `nvcc`.
-
-Kiểm tra:
-
-```bash
-nvidia-smi
-nvcc --version
+```text
+(Built-in DES | 36-bit key space | CUDA build)
+Backend           : CUDA GPU
 ```
 
-Nếu `nvidia-smi` nhận GPU nhưng chưa có `nvcc`, cài CUDA Toolkit từ repo NVIDIA:
+Neu thay `Backend : CPU fallback`, nghia la chuong trinh khong dung duoc CUDA runtime/GPU va dang roi ve CPU.
 
-```bash
-sudo apt update
-sudo apt install -y build-essential wget lsb-release
-wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu$(lsb_release -rs | tr -d .)/x86_64/cuda-keyring_1.1-1_all.deb
-sudo dpkg -i cuda-keyring_1.1-1_all.deb
-sudo apt update
-sudo apt install -y cuda-toolkit-12-6
-```
+## Cach chay
 
-Thêm PATH:
-
-```bash
-echo 'export PATH=/usr/local/cuda-12.6/bin:$PATH' >> ~/.bashrc
-echo 'export LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
-source ~/.bashrc
-nvcc --version
-```
-
-Build CUDA trên Ubuntu:
-
-```bash
-nvcc -O3 -std=c++17 -DUSE_CUDA -o rainbow_attack_cuda main.cpp des.cpp rainbow_table.cpp cuda_rainbow.cu
-./rainbow_attack_cuda
-```
-
-Nếu máy cài CUDA version khác, đổi `cuda-12.6` thành đúng thư mục trong `/usr/local/`.
-
----
-
-## Cách dùng
-
-Chương trình có 4 chế độ:
-
-```
 Menu:
-  1. Crack demo tu dong       (load bang co san neu co)
-  2. Crack key thu cong       (0 -> KEY_SPACE-1)
-  3. Precompute/load table    (giong buoc tao bang cua crack.sh)
-  4. Xem thong tin thuc te ngoai doi
+
+```text
+1. Crack demo tu dong       (load bang co san neu co)
+2. Crack key thu cong       (0 -> KEY_SPACE-1)
+3. Precompute/load table    (giong buoc tao bang cua crack.sh)
+4. Xem thong tin thuc te ngoai doi
 ```
 
-| Chế độ | Mô tả |
-|--------|-------|
-| **1** | Load bảng đã precompute nếu có, rồi crack key demo |
-| **2** | Load bảng đã precompute nếu có, rồi crack key bạn nhập |
-| **3** | Precompute bảng và lưu ra file `.bin`, lần sau load lại |
-| **4** | Hiển thị thông tin thực tế về DES crack ngoài đời (crack.sh) |
+Workflow nen dung:
 
-> **Lưu ý:** Workflow giống crack.sh là chạy chế độ **3** trước để tạo bảng, sau đó các lần sau chọn **1** hoặc **2** để chỉ load bảng và tra.
+1. Chay `.\rainbow_attack_cuda.exe`.
+2. Chon `3` de precompute table mot lan.
+3. Cac lan sau chon `1` hoac `2`, chuong trinh se load file `.bin`.
 
----
+Ten file table tu dong dua tren config:
 
-## Điều chỉnh thông số
+```text
+rainbow_table_k36_m1342177280_t256.bin
+```
 
-Mở `config.h` và chỉnh các giá trị:
+Neu doi `KEY_BITS`, `NUM_CHAINS`, `CHAIN_LENGTH` hoac `PLAINTEXT`, chuong trinh se tao file table moi.
+
+## Toi uu da ap dung
+
+### 1. Khong dung `unordered_map` cho bang lon
+
+Ban cu luu table bang:
 
 ```cpp
-static constexpr int      KEY_BITS     = 28;    // Mini DES key space = 2^28
-static constexpr int      CHAIN_LENGTH = 15000; // Dài chain càng lớn → coverage tốt hơn
-static constexpr int      NUM_CHAINS   = 50000; // Nhiều chain → bảng lớn hơn
-static constexpr uint64_t PLAINTEXT    = 0x1122334455667788ULL; // Chosen plaintext cố định
+unordered_map<endpoint, start>
 ```
 
-### Công thức coverage (lý thuyết):
-```
-Coverage ≈ 1 - (1 - CHAIN_LENGTH / KEY_SPACE)^NUM_CHAINS
-```
+Voi hang ty endpoint, `unordered_map` ton RAM rat lon do bucket/node overhead. Ban moi luu:
 
-Ví dụ với giá trị mặc định hiện tại:
-```
-Coverage ≈ 1 - (1 - 15000/268435456)^50000 ≈ 93.88%
-```
-
-Bảng được lưu theo tên chứa cấu hình, ví dụ:
-
-```
-rainbow_table_k28_m50000_t15000.bin
-```
-
-Nếu đổi `KEY_BITS`, `CHAIN_LENGTH`, `NUM_CHAINS` hoặc `PLAINTEXT`, chương trình sẽ tự tạo file bảng mới.
-
----
-
-## Giải thích code
-
-### `config.h` — Cấu hình trung tâm
-
-File duy nhất cần sửa khi muốn thay đổi thông số. Mọi file khác đều `#include "config.h"`.
-
----
-
-### `des.h` / `des.cpp` — Thuật toán DES
-
-#### Cấu trúc `KeySchedule`
 ```cpp
-struct KeySchedule { uint64_t K[16]; };
-```
-Lưu 16 subkey (mỗi key 48 bit) được sinh ra từ key gốc 56 bit.
-
-#### `indexToKey(idx, out)` — Chuyển index → key 8 byte
-```
-index (56-bit mini/real space) → [B0][B1][B2][B3][B4][B5][B6][DD]
-```
-7 byte đầu lấy từ index, byte cuối cố định để tạo DES key 64-bit. Code dùng `uint64_t` để sau này có thể nâng dần tới key space DES 56-bit thật.
-
-#### `buildKeySchedule(key)` — Sinh key schedule
-Quy trình chuẩn DES:
-1. **PC-1**: Loại bỏ parity bit, 64 bit → 56 bit, chia thành C (28 bit) và D (28 bit)
-2. **16 vòng lặp**: Dịch vòng trái C và D theo `SHIFTS[]`, rồi áp dụng **PC-2** (56 → 48 bit) → subkey K[i]
-
-#### `desEncrypt(plaintext, ks)` — Mã hóa DES một block
-Quy trình Feistel 16 vòng:
-
-```
-plaintext (64-bit)
-    │
-    ▼ IP (Initial Permutation)
-   [L0 | R0]  (32 bit mỗi nửa)
-    │
-    ▼ × 16 vòng:
-   L(i+1) = R(i)
-   R(i+1) = L(i) XOR f(R(i), K(i))
-    │
-    ▼ Swap L ↔ R
-    ▼ IP⁻¹ (Final Permutation)
-    │
-ciphertext (64-bit)
+using RainbowTable = std::vector<std::pair<uint64_t, uint64_t>>;
 ```
 
-**Hàm f(R, K):**
-1. **E (Expansion):** R 32 bit → 48 bit (một số bit được lặp)
-2. **XOR** với subkey K (48 bit)
-3. **S-box:** 8 S-box, mỗi cái nhận 6 bit → cho ra 4 bit (tổng 48 → 32 bit)
-4. **P (Permutation):** Hoán vị 32 bit kết quả
+Moi entry van la `(endpoint, start)` 16 bytes. Sau khi build xong, table duoc sort theo endpoint va xoa endpoint trung.
 
-#### `H(keyIdx)` — Hash function của rainbow table
+### 2. Lookup bang binary search
+
+Khi crack, code tinh endpoint gia dinh roi tim bang:
+
+```cpp
+std::lower_bound(table.begin(), table.end(), endpoint)
+```
+
+Thoi gian lookup la `O(log n)`, nhung RAM it hon nhieu va on dinh hon voi table rat lon.
+
+### 3. Build theo batch
+
+Code khong cap phat `starts` va `results` cho toan bo `NUM_CHAINS` cung luc. Moi batch hien tai:
+
+```cpp
+BUILD_BATCH_CHAINS = 1 << 20;
+```
+
+Tuc la moi lan sinh 1,048,576 chain, append vao table, roi tiep tuc batch sau.
+
+### 4. CUDA kernel chia chunk
+
+CUDA chain duoc chia thanh cac chunk nho:
+
+```cpp
+CUDA_CHAIN_STEP_CHUNK = 256;
+```
+
+Voi `CHAIN_LENGTH=256`, moi chain hien tai chay dung 1 kernel chunk. Neu sau nay tang chain length, kernel se chia nho de giam rui ro Windows TDR timeout.
+
+## Vi sao CPU van chay khi build CUDA?
+
+CUDA chi tang toc phan sinh chain trong phase precompute. Cac phan sau van chay tren CPU:
+
+| Phan viec | CPU/GPU |
+|---|---|
+| Benchmark DES dau chuong trinh | CPU |
+| Sinh chain khi co CUDA | GPU |
+| Append vector, sort, unique | CPU |
+| Save/load file table | CPU / disk I/O |
+| Crack/lookup/verify chain | CPU |
+
+Viec CPU van co load la binh thuong. Dieu can xem la dong `Backend`.
+
+## Vi sao nhap key trong vung van co the khong thay?
+
+Rainbow table khong dam bao phu 100% key space. No la time-memory trade-off.
+
+Ly do miss:
+
+- Key do khong nam trong bat ky chain nao cua table.
+- Chain collision/merge lam coverage thuc te thap hon cong thuc ly thuyet.
+- Reduction function tao endpoint trung.
+- Table duoc build voi config/PLAINTEXT khac binary dang chay.
+
+Code da chan truong hop nhap key vuot vung:
+
+```text
+0 -> KEY_SPACE-1
+```
+
+Nhung neu key hop le ma khong thuoc coverage cua table thi van se bao `Khong tim thay`.
+
+## Cong thuc coverage
+
+Uoc tinh ly thuyet:
+
+```text
+coverage ~= 1 - (1 - CHAIN_LENGTH / KEY_SPACE) ^ NUM_CHAINS
+```
+
+Cong thuc nay chi la xap xi ly tuong. Coverage thuc te thap hon do collision va merge.
+
+Voi config hien tai:
+
+```text
+KEY_SPACE    = 2^36
+CHAIN_LENGTH = 256
+NUM_CHAINS   = 1342177280
+```
+
+Tong so buoc chain ly thuyet rat lon, nhung khong dong nghia 100% vi co trung lap.
+
+## Tang/giam cau hinh
+
+Muon file table lon hon/nho hon, doi `NUM_CHAINS`.
+
+Cong thuc dung de uoc tinh file:
+
+```text
+file_size_bytes ~= NUM_CHAINS * 16
+```
+
+Vi du:
+
+| File mong muon | NUM_CHAINS gan dung |
+|---|---:|
+| 5 GiB | 335,544,320 |
+| 10 GiB | 671,088,640 |
+| 20 GiB | 1,342,177,280 |
+
+Muon search nhanh hon, giam `CHAIN_LENGTH`. Doi lai phai tang `NUM_CHAINS` neu muon giu coverage.
+
+Muon coverage cao hon:
+
+- Tang `NUM_CHAINS` la cach truc tiep nhat.
+- Tang `CHAIN_LENGTH` giup coverage nhung lam crack cham hon, vi crack phai thu nhieu vi tri chain.
+- Dung nhieu table voi seed/reduction khac se tot hon mot table qua dai, nhung code hien tai chua implement multi-table.
+
+## Gioi han thuc te
+
+Bang gan 20 GiB se ton:
+
+- Nhieu gio hoac lau hon tuy GPU.
+- Khoang 20 GiB disk cho file `.bin`.
+- Nhieu RAM khi sort/load.
+- I/O disk dang ke khi save/load.
+
+Neu may chi co 16 GiB RAM, nen giam `NUM_CHAINS` xuong 5-10 GiB truoc.
+
+## Ghi chu ve DES
+
+`H(keyIdx)` trong project:
+
 ```cpp
 uint64_t H(uint64_t keyIdx) {
     indexToKey(keyIdx, key);
-    ks = buildKeySchedule(key);
-    return desEncrypt(PLAINTEXT, ks);  // PLAINTEXT cố định!
+    KeySchedule ks = buildKeySchedule(key);
+    return desEncrypt(PLAINTEXT, ks);
 }
 ```
-Đây là **chosen-plaintext**: plaintext luôn cố định nên attacker có thể precompute.
 
----
+Plaintext co dinh nen attacker co the precompute table truoc. Day la tinh huong chosen-plaintext/minh hoa tuong tu ly do DES khong con an toan cho he thong hien dai.
 
-### `rainbow_table.h` / `rainbow_table.cpp` — Rainbow Table
+## Troubleshooting
 
-#### `R(cipher, position)` — Reduction function
-```cpp
-uint64_t R(uint64_t cipher, int position) {
-    return (cipher XOR (position * MAGIC_CONSTANT)) % KEY_SPACE;
-}
-```
-- Chuyển ciphertext 64-bit → key index trong `KEY_SPACE`
-- **Mỗi `position` cho một hàm R khác nhau** → đây là tính chất "**Rainbow**" (khác với lookup table thường dùng một hàm R duy nhất)
-- Tính chất này giúp tránh collision giữa các chain khác nhau
+### `nvcc` khong nhan
 
-#### `generateChainEnd(start)` — Sinh một chain
-```
-k_start →[H]→ c₀ →[R₀]→ k₁ →[H]→ c₁ →[R₁]→ ... →[R_{t-1}]→ k_end
-```
-- Chỉ lưu `(start, end)` → tiết kiệm bộ nhớ rất nhiều so với lưu toàn bộ chain
-- `CHAIN_LENGTH` bước tính toán cho mỗi chain
+CUDA Toolkit chua cai hoac `nvcc` chua nam trong PATH.
 
-#### `buildTable()` — Xây bảng (Multi-threaded)
+Kiem tra:
 
-```
-[Thread 1]  chain 0    → chain 1999
-[Thread 2]  chain 2000 → chain 3999
-[Thread 3]  chain 4000 → chain 5999
-[Thread 4]  chain 6000 → chain 7999
-    ↓ (song song)
-HashMap: { end_idx:uint64 → start_idx:uint64 }
+```powershell
+nvcc --version
+nvidia-smi
 ```
 
-1. Sinh `NUM_CHAINS` điểm bắt đầu ngẫu nhiên
-2. Chia đều cho `N` thread (tự detect số CPU core)
-3. Mỗi thread chạy `generateChainEnd()` độc lập
-4. Gộp kết quả vào `unordered_map<uint64_t, uint64_t>`
+### Build CUDA nhung van CPU fallback
 
-Nếu build bằng CUDA, phần sinh chain chạy trong `cuda_rainbow.cu`; nếu không có CUDA, chương trình tự dùng CPU fallback.
+Kiem tra:
 
-#### `crack(targetCipher, table, steps)` — Tra bảng tìm key
+- Co NVIDIA GPU khong.
+- Driver co chay khong.
+- Binary dang chay co phai `rainbow_attack_cuda.exe` khong.
+- Output dau chuong trinh co hien `CUDA build` khong.
 
-Thuật toán từ cuối chain về đầu:
+### Load bang cu khong duoc
 
-```
-Với p = (t-1) xuống 0:
-    cur = R_p(targetCipher)          // giả sử cipher xuất hiện ở bước p
-    cur = R_{p+1}(H(cur))
-    ...
-    cur = R_{t-1}(H(cur))            // đến cuối chain
-    
-    Nếu cur có trong bảng:
-        Tái tạo chain từ start để xác nhận và tìm key chính xác
-```
+Ban moi dung format `RBT2` sorted vector. Bang format cu se khong load de tranh sai ket qua. Hay build lai table.
 
-**Tại sao tìm từ cuối về đầu?** Vì attacker không biết targetCipher nằm ở bước nào trong chain, phải thử tất cả vị trí.
+### Nhap key hop le nhung miss
 
----
-
-### `main.cpp` — Giao diện người dùng
-
-| Hàm | Vai trò |
-|-----|---------|
-| `benchmarkSpeed()` | Đo tốc độ DES: chạy 50,000 encrypt, tính ops/giây |
-| `doAttack(idx, table)` | Thực hiện và in kết quả tấn công một key cụ thể |
-| `demoAuto(table)` | Vòng lặp crack key ngẫu nhiên |
-| `demoManual(table)` | Cho nhập key, hỗ trợ hex (0xABCD) và decimal |
-| `showRealWorld()` | In thông tin thực tế về DES crack ngoài đời |
-
----
-
-## So sánh backend
-
-| Backend | Build command | Vai trò |
-|---------|---------------|--------|
-| CPU fallback | `g++ ... gpu_builder_stub.cpp -pthread` | Dễ build, dùng `std::thread`, phù hợp test logic |
-| CUDA GPU | `nvcc ... cuda_rainbow.cu` | Sinh chain trên NVIDIA GPU, giống hướng precompute thực tế hơn |
-
-Tốc độ phụ thuộc CPU/GPU, driver, CUDA Toolkit và `KEY_BITS/CHAIN_LENGTH/NUM_CHAINS`. Với workflow đúng, bảng chỉ cần build một lần rồi lưu lại; những lần sau chương trình load file `.bin` để crack.
-
----
-
-## Thực tế ngoài đời
-
-| Thông số | Giá trị |
-|----------|---------|
-| Plaintext cố định | `0x1122334455667788` (dùng trong Net-NTLMv1) |
-| Key space thật | 2⁵⁶ ≈ 72 nghìn tỷ key |
-| Công cụ thật | [crack.sh](https://crack.sh) (miễn phí), ophcrack |
-| Phần cứng | GPU cluster / FPGA |
-| Thời gian xây bảng | Nhiều tuần |
-| Thời gian crack | **~25 giây** (chỉ tra bảng!) |
-| Kích thước bảng | ~7 GB (đã nén) |
-
-> **Kết luận:** DES bị khai tử năm 2001 chính vì chosen-plaintext rainbow table attack.
-> Plaintext cố định trong Net-NTLMv1 biến DES từ 2⁵⁶ brute-force → có thể precompute hoàn toàn.
-> **AES** (Advanced Encryption Standard) được dùng thay thế từ đó đến nay.
-
----
-
-## Lý thuyết Rainbow Table
-
-### Tại sao không dùng lookup table thông thường?
-
-| Phương pháp | Không gian lưu trữ | Thời gian tìm |
-|-------------|-------------------|---------------|
-| Lookup table đầy đủ | O(N) — 4 tỷ entry → hàng GB | O(1) |
-| Brute force | O(1) | O(N) |
-| **Rainbow Table** | **O(N/t)** | **O(t²)** |
-
-Rainbow table là điểm cân bằng tối ưu giữa bộ nhớ và thời gian tính toán (*time-memory trade-off*).
-
-### Tại sao dùng nhiều hàm R khác nhau (R₀, R₁, ..., R_{t-1})?
-
-Nếu chỉ dùng một hàm R:
-- Hai chain cùng đi qua một điểm → **merge** → lãng phí bộ nhớ và giảm coverage
-
-Dùng nhiều hàm R khác nhau theo vị trí:
-- Chain merge ở vị trí `i` vẫn **phân kỳ** ở vị trí `i+1` → coverage tốt hơn nhiều
-- Đây là đóng góp chính của Philippe Oechslin (2003)
-
----
-
-*Được tạo cho mục đích học thuật — MMUD Week 4: DES Security Analysis*
+Day la han che cua rainbow table. Tang `NUM_CHAINS`, tao table lon hon, hoac implement multi-table neu can ty le tim thay cao hon nua.

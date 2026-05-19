@@ -17,8 +17,10 @@
 #include <chrono>
 #include <fstream>
 #include <string>
+#include <algorithm>
 
-static std::vector<uint64_t> g_chainStarts;
+static constexpr int BUILD_BATCH_CHAINS = 1 << 20;
+static constexpr uint32_t TABLE_MAGIC = 0x32425452; // RBT2, sorted endpoint->start pairs
 
 static std::string tableFileName() {
     return "rainbow_table_k" + std::to_string(KEY_BITS)
@@ -41,14 +43,14 @@ uint64_t generateChainEnd(uint64_t start) {
     return cur;
 }
 
-uint64_t randomKeyFromBuiltChains() {
-    if (g_chainStarts.empty()) return 0;
+uint64_t randomKeyFromTable(const RainbowTable& table) {
+    if (table.empty()) return 0;
 
     static std::mt19937 rng((uint32_t)std::chrono::steady_clock::now().time_since_epoch().count());
-    std::uniform_int_distribution<size_t> chainDist(0, g_chainStarts.size() - 1);
+    std::uniform_int_distribution<size_t> chainDist(0, table.size() - 1);
     std::uniform_int_distribution<int> posDist(0, CHAIN_LENGTH - 1);
 
-    uint64_t key = g_chainStarts[chainDist(rng)];
+    uint64_t key = table[chainDist(rng)].second;
     int targetPos = posDist(rng);
     for (int pos = 0; pos < targetPos; pos++) {
         key = R(H(key), pos);
@@ -56,7 +58,28 @@ uint64_t randomKeyFromBuiltChains() {
     return key;
 }
 
-std::unordered_map<uint64_t, uint64_t> buildTable() {
+static void generateBatchCpu(
+    const std::vector<uint64_t>& starts,
+    std::vector<std::pair<uint64_t,uint64_t>>& results,
+    unsigned numThreads)
+{
+    results.resize(starts.size());
+    std::atomic<size_t> next(0);
+    std::vector<std::thread> threads;
+
+    auto worker = [&]() {
+        while (true) {
+            size_t i = next.fetch_add(1, std::memory_order_relaxed);
+            if (i >= starts.size()) break;
+            results[i] = { starts[i], generateChainEnd(starts[i]) };
+        }
+    };
+
+    for (unsigned t = 0; t < numThreads; t++) threads.emplace_back(worker);
+    for (auto& t : threads) t.join();
+}
+
+RainbowTable buildTable() {
     std::cout << "\n" << std::string(65,'=') << "\n";
     std::cout << "  PHASE 1 -- XAY DUNG RAINBOW TABLE\n";
     std::cout << std::string(65,'=') << "\n";
@@ -65,6 +88,11 @@ std::unordered_map<uint64_t, uint64_t> buildTable() {
     std::cout << "  Key space         : 2^" << KEY_BITS << " = " << KEY_SPACE << " keys\n";
     std::cout << "  So chain (m)      : " << NUM_CHAINS << "\n";
     std::cout << "  Do dai chain (t)  : " << CHAIN_LENGTH << "\n";
+    double rawFileGiB = (double)NUM_CHAINS * 16.0 / 1024.0 / 1024.0 / 1024.0;
+    std::cout << "  File raw uoc tinh : ~"
+              << std::fixed << std::setprecision(2) << rawFileGiB << " GiB\n";
+    std::cout << "  Batch build       : " << BUILD_BATCH_CHAINS << " chains/lan\n";
+    std::cout << "  Luu y RAM         : sorted vector can gan bang file raw, it hon unordered_map\n";
 
     double cov = 1.0 - std::pow(1.0 - (double)CHAIN_LENGTH/KEY_SPACE, NUM_CHAINS);
     std::cout << "  Coverage uoc tinh : ~"
@@ -76,61 +104,53 @@ std::unordered_map<uint64_t, uint64_t> buildTable() {
 
     std::mt19937 rng((uint32_t)time(nullptr));
     std::uniform_int_distribution<uint64_t> dist(0, KEY_SPACE-1);
-    std::vector<uint64_t> starts(NUM_CHAINS);
-    for (auto& s : starts) s = dist(rng);
-    g_chainStarts = starts;
 
     auto t0 = std::chrono::steady_clock::now();
-    std::vector<std::pair<uint64_t,uint64_t>> results(NUM_CHAINS);
-    if (generateChainsGpu(starts, results)) {
-        std::cout << "  Backend           : CUDA GPU\n";
-    } else {
-        std::cout << "  Backend           : CPU fallback\n";
-        std::atomic<int> done(0);
-        std::vector<std::thread> threads;
+    RainbowTable table;
+    table.reserve((size_t)NUM_CHAINS);
 
-        auto worker = [&](int from, int to) {
-            for (int i = from; i < to; i++) {
-                results[i] = { starts[i], generateChainEnd(starts[i]) };
-                done.fetch_add(1, std::memory_order_relaxed);
-            }
-        };
+    std::vector<uint64_t> starts;
+    std::vector<std::pair<uint64_t,uint64_t>> results; // start -> endpoint from backend
+    bool backendKnown = false;
+    bool usingGpu = false;
 
-        int chunk = NUM_CHAINS / numThreads;
-        for (unsigned t = 0; t < numThreads; t++) {
-            int from = t * chunk;
-            int to   = (t == numThreads-1) ? NUM_CHAINS : from + chunk;
-            threads.emplace_back(worker, from, to);
+    for (uint64_t produced = 0; produced < (uint64_t)NUM_CHAINS; ) {
+        int batch = BUILD_BATCH_CHAINS;
+        if (produced + (uint64_t)batch > (uint64_t)NUM_CHAINS)
+            batch = (int)((uint64_t)NUM_CHAINS - produced);
+
+        starts.resize((size_t)batch);
+        for (auto& s : starts) s = dist(rng);
+
+        bool okGpu = (!backendKnown || usingGpu) && generateChainsGpu(starts, results);
+        if (!backendKnown) {
+            usingGpu = okGpu;
+            std::cout << "  Backend           : " << (usingGpu ? "CUDA GPU" : "CPU fallback") << "\n";
+            backendKnown = true;
         }
+        if (!okGpu) generateBatchCpu(starts, results, numThreads);
 
-        int lastPrint = -1;
-        while (done.load() < NUM_CHAINS) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            int d = done.load();
-            if (d - lastPrint >= 400 || d == NUM_CHAINS) {
-                double el  = std::chrono::duration<double>(std::chrono::steady_clock::now()-t0).count();
-                double pct = (double)d/NUM_CHAINS*100.0;
-                int    b   = (int)(pct/5);
-                std::string bar(b,'#'); bar += std::string(20-b,'.');
-                long long sp = (el>0) ? (long long)(d*CHAIN_LENGTH/el) : 0;
-                std::cout << "\r  [" << bar << "] "
-                          << std::fixed << std::setprecision(1) << pct << "%  "
-                          << d << "/" << NUM_CHAINS << "  " << sp << " ops/s  ("
-                          << el << "s)  " << std::flush;
-                lastPrint = d;
-            }
-        }
-        for (auto& t : threads) t.join();
-        std::cout << "\n";
-    }
+        for (auto& [start, end] : results) table.emplace_back(end, start);
+        produced += (uint64_t)batch;
 
-    std::unordered_map<uint64_t,uint64_t> table;
-    table.reserve(NUM_CHAINS);
-    int collisions = 0;
-    for (auto& [s,e] : results) {
-        if (table.count(e)) collisions++;
-        else table[e] = s;
+        double el  = std::chrono::duration<double>(std::chrono::steady_clock::now()-t0).count();
+        double pct = (double)produced / NUM_CHAINS * 100.0;
+        int    b   = (int)(pct/5);
+        std::string bar(b,'#'); bar += std::string(20-b,'.');
+        long long sp = (el>0) ? (long long)(produced*CHAIN_LENGTH/el) : 0;
+        std::cout << "\r  [" << bar << "] "
+                  << std::fixed << std::setprecision(1) << pct << "%  "
+                  << produced << "/" << NUM_CHAINS << "  " << sp << " ops/s  ("
+                  << el << "s)  " << std::flush;
     }
+    std::cout << "\n  [*] Dang sort endpoint de toi uu lookup...\n";
+    std::sort(table.begin(), table.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    auto oldSize = table.size();
+    table.erase(std::unique(table.begin(), table.end(),
+                            [](const auto& a, const auto& b) { return a.first == b.first; }),
+                table.end());
+    size_t collisions = oldSize - table.size();
 
     double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now()-t0).count();
     std::cout << "\n  [OK] Bang xay xong trong "
@@ -141,11 +161,11 @@ std::unordered_map<uint64_t, uint64_t> buildTable() {
     return table;
 }
 
-static bool saveTable(const std::unordered_map<uint64_t,uint64_t>& table) {
+static bool saveTable(const RainbowTable& table) {
     std::ofstream out(tableFileName(), std::ios::binary);
     if (!out) return false;
 
-    uint32_t magic = 0x52425431; // RBT1
+    uint32_t magic = TABLE_MAGIC;
     uint32_t keyBits = KEY_BITS;
     uint32_t chainLength = CHAIN_LENGTH;
     uint32_t numChains = NUM_CHAINS;
@@ -158,14 +178,14 @@ static bool saveTable(const std::unordered_map<uint64_t,uint64_t>& table) {
     out.write((char*)&numChains, sizeof(numChains));
     out.write((char*)&plaintext, sizeof(plaintext));
     out.write((char*)&count, sizeof(count));
-    for (auto& [end, start] : table) {
+    for (const auto& [end, start] : table) {
         out.write((char*)&end, sizeof(end));
         out.write((char*)&start, sizeof(start));
     }
     return (bool)out;
 }
 
-static bool loadTable(std::unordered_map<uint64_t,uint64_t>& table) {
+static bool loadTable(RainbowTable& table) {
     std::ifstream in(tableFileName(), std::ios::binary);
     if (!in) return false;
 
@@ -182,30 +202,27 @@ static bool loadTable(std::unordered_map<uint64_t,uint64_t>& table) {
     in.read((char*)&numChains, sizeof(numChains));
     in.read((char*)&plaintext, sizeof(plaintext));
     in.read((char*)&count, sizeof(count));
-    if (!in || magic != 0x52425431 || keyBits != KEY_BITS ||
+    if (!in || magic != TABLE_MAGIC || keyBits != KEY_BITS ||
         chainLength != CHAIN_LENGTH || numChains != NUM_CHAINS ||
         plaintext != PLAINTEXT) {
         return false;
     }
 
     table.clear();
-    table.reserve((size_t)count);
-    g_chainStarts.clear();
-    g_chainStarts.reserve((size_t)count);
+    table.resize((size_t)count);
     for (uint64_t i = 0; i < count; i++) {
         uint64_t end = 0;
         uint64_t start = 0;
         in.read((char*)&end, sizeof(end));
         in.read((char*)&start, sizeof(start));
         if (!in) return false;
-        table[end] = start;
-        g_chainStarts.push_back(start);
+        table[(size_t)i] = {end, start};
     }
     return true;
 }
 
-std::unordered_map<uint64_t, uint64_t> loadOrBuildTable() {
-    std::unordered_map<uint64_t,uint64_t> table;
+RainbowTable loadOrBuildTable() {
+    RainbowTable table;
     std::cout << "\n  Rainbow table file: " << tableFileName() << "\n";
     if (loadTable(table)) {
         std::cout << "  [OK] Da load bang co san: " << table.size() << " endpoints\n";
@@ -224,7 +241,7 @@ std::unordered_map<uint64_t, uint64_t> loadOrBuildTable() {
 
 std::pair<uint64_t,bool> crack(
     uint64_t targetCipher,
-    const std::unordered_map<uint64_t,uint64_t>& table,
+    const RainbowTable& table,
     long long& steps)
 {
     steps = 0;
@@ -235,8 +252,11 @@ std::pair<uint64_t,bool> crack(
             cur = R(H(cur), pos);
             steps++;
         }
-        auto it = table.find(cur);
-        if (it != table.end()) {
+        auto it = std::lower_bound(table.begin(), table.end(), cur,
+                                   [](const auto& entry, uint64_t value) {
+                                       return entry.first < value;
+                                   });
+        if (it != table.end() && it->first == cur) {
             uint64_t k = it->second;
             for (int pos = 0; pos < CHAIN_LENGTH; pos++) {
                 uint64_t c = H(k);

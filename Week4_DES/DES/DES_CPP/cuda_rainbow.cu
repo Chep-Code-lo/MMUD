@@ -11,6 +11,8 @@ struct GpuPair {
     uint64_t end;
 };
 
+static constexpr int CUDA_CHAIN_STEP_CHUNK = 256;
+
 __constant__ int d_IP[64] = {
     58,50,42,34,26,18,10,2, 60,52,44,36,28,20,12,4,
     62,54,46,38,30,22,14,6, 64,56,48,40,32,24,16,8,
@@ -113,17 +115,16 @@ __device__ __forceinline__ uint64_t reduceCipher(uint64_t cipher, int position) 
     return (cipher ^ ((uint64_t)position * 0x517CC1B727220A95ULL)) % KEY_SPACE;
 }
 
-__global__ void chainKernel(const uint64_t* starts, GpuPair* results, int n) {
+__global__ void chainKernel(uint64_t* states, int n, int fromPos, int toPos) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
 
-    uint64_t cur = starts[i];
-    for (int pos = 0; pos < CHAIN_LENGTH; pos++) {
+    uint64_t cur = states[i];
+    for (int pos = fromPos; pos < toPos; pos++) {
         uint64_t cipher = encryptDes(PLAINTEXT, keyFromIndex(cur));
         cur = reduceCipher(cipher, pos);
     }
-    results[i].start = starts[i];
-    results[i].end = cur;
+    states[i] = cur;
 }
 
 bool generateChainsGpu(
@@ -135,35 +136,46 @@ bool generateChainsGpu(
     int deviceCount = 0;
     if (cudaGetDeviceCount(&deviceCount) != cudaSuccess || deviceCount <= 0) return false;
 
-    uint64_t* dStarts = nullptr;
-    GpuPair* dResults = nullptr;
+    uint64_t* dStates = nullptr;
     size_t n = starts.size();
-    cudaError_t err = cudaMalloc(&dStarts, n * sizeof(uint64_t));
+    cudaError_t err = cudaMalloc(&dStates, n * sizeof(uint64_t));
     if (err != cudaSuccess) return false;
-    err = cudaMalloc(&dResults, n * sizeof(GpuPair));
+
+    err = cudaMemcpy(dStates, starts.data(), n * sizeof(uint64_t), cudaMemcpyHostToDevice);
     if (err != cudaSuccess) {
-        cudaFree(dStarts);
+        std::cerr << "  [!] CUDA copy error: " << cudaGetErrorString(err) << "\n";
+        cudaFree(dStates);
         return false;
     }
 
-    cudaMemcpy(dStarts, starts.data(), n * sizeof(uint64_t), cudaMemcpyHostToDevice);
     int block = 128;
     int grid = (int)((n + block - 1) / block);
-    chainKernel<<<grid, block>>>(dStarts, dResults, (int)n);
-    err = cudaDeviceSynchronize();
+
+    for (int fromPos = 0; fromPos < CHAIN_LENGTH; fromPos += CUDA_CHAIN_STEP_CHUNK) {
+        int toPos = fromPos + CUDA_CHAIN_STEP_CHUNK;
+        if (toPos > CHAIN_LENGTH) toPos = CHAIN_LENGTH;
+
+        chainKernel<<<grid, block>>>(dStates, (int)n, fromPos, toPos);
+        err = cudaGetLastError();
+        if (err == cudaSuccess) err = cudaDeviceSynchronize();
+        if (err != cudaSuccess) {
+            std::cerr << "  [!] CUDA error at chain position "
+                      << fromPos << "-" << (toPos - 1) << ": "
+                      << cudaGetErrorString(err) << "\n";
+            cudaFree(dStates);
+            return false;
+        }
+    }
+
+    std::vector<uint64_t> ends(n);
+    err = cudaMemcpy(ends.data(), dStates, n * sizeof(uint64_t), cudaMemcpyDeviceToHost);
+    cudaFree(dStates);
     if (err != cudaSuccess) {
-        std::cerr << "  [!] CUDA error: " << cudaGetErrorString(err) << "\n";
-        cudaFree(dStarts);
-        cudaFree(dResults);
+        std::cerr << "  [!] CUDA copy error: " << cudaGetErrorString(err) << "\n";
         return false;
     }
 
-    std::vector<GpuPair> tmp(n);
-    cudaMemcpy(tmp.data(), dResults, n * sizeof(GpuPair), cudaMemcpyDeviceToHost);
-    cudaFree(dStarts);
-    cudaFree(dResults);
-
     results.resize(n);
-    for (size_t i = 0; i < n; i++) results[i] = {tmp[i].start, tmp[i].end};
+    for (size_t i = 0; i < n; i++) results[i] = {starts[i], ends[i]};
     return true;
 }

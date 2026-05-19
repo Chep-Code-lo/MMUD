@@ -25,7 +25,7 @@ static void benchmarkSpeed() {
 }
 
 static void doAttack(uint64_t targetIdx,
-                     const std::unordered_map<uint64_t,uint64_t>& table)
+                     const RainbowTable& table)
 {
     uint64_t targetCipher = H(targetIdx);
     std::cout << "\n" << std::string(65,'=') << "\n";
@@ -83,16 +83,16 @@ static void showRealWorld() {
     std::cout << std::string(65,'=') << "\n";
 }
 
-static void demoAuto(const std::unordered_map<uint64_t,uint64_t>& table) {
+static void demoAuto(const RainbowTable& table) {
     while (true) {
-        doAttack(randomKeyFromBuiltChains(), table);
+        doAttack(randomKeyFromTable(table), table);
         std::cout << "\n  Chay lai? (y/n): ";
         char c; std::cin >> c;
         if (c!='y' && c!='Y') break;
     }
 }
 
-static void demoManual(const std::unordered_map<uint64_t,uint64_t>& table) {
+static void demoManual(const RainbowTable& table) {
     while (true) {
         std::cout << "\n  Nhap key (0 -> " << (KEY_SPACE-1) << ", vd: 12345 hoac 0xABCD): ";
         std::string raw; std::cin >> raw;
@@ -103,6 +103,11 @@ static void demoManual(const std::unordered_map<uint64_t,uint64_t>& table) {
             else
                 keyIdx = std::stoull(raw);
         } catch (...) { std::cout << "  Key khong hop le!\n"; continue; }
+        if (keyIdx >= KEY_SPACE) {
+            std::cout << "  Key vuot qua key space hien tai (0 -> "
+                      << (KEY_SPACE - 1) << "). Hay tang KEY_BITS trong config.h va build lai.\n";
+            continue;
+        }
         doAttack(keyIdx, table);
         std::cout << "\n  Nhap key khac? (y/n): ";
         char c; std::cin >> c;
@@ -113,7 +118,13 @@ static void demoManual(const std::unordered_map<uint64_t,uint64_t>& table) {
 int main() {
     std::cout << "\n" << std::string(65,'=') << "\n";
     std::cout << "  DES Rainbow Table Attack -- C++ Version\n";
-    std::cout << "  (Built-in DES | " << KEY_BITS << "-bit key space | Multi-threaded)\n";
+    std::cout << "  (Built-in DES | " << KEY_BITS << "-bit key space | "
+#ifdef USE_CUDA
+              << "CUDA build"
+#else
+              << "CPU build"
+#endif
+              << ")\n";
     std::cout << std::string(65,'=') << "\n";
 
     benchmarkSpeed();
