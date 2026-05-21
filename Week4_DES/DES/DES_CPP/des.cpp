@@ -54,10 +54,19 @@ static inline int getBit64(uint64_t block, int b) { return (block >> (64 - b)) &
 static inline int getBit32(uint32_t block, int b) { return (block >> (32 - b)) & 1; }
 
 void indexToKey(uint64_t idx, uint8_t out[8]) {
-    out[0]=(idx>>48)&0xFF; out[1]=(idx>>40)&0xFF;
-    out[2]=(idx>>32)&0xFF; out[3]=(idx>>24)&0xFF;
-    out[4]=(idx>>16)&0xFF; out[5]=(idx>> 8)&0xFF;
-    out[6]=idx&0xFF;       out[7]=0xDD;
+    for (int byte = 7; byte >= 0; --byte) {
+        uint8_t dataBits = (uint8_t)(idx & 0x7FULL);
+        out[byte] = (uint8_t)((dataBits << 1) | 0x01);
+        idx >>= 7;
+    }
+}
+
+uint64_t keyIndexToDesKeyValue(uint64_t idx) {
+    uint8_t key[8];
+    indexToKey(idx, key);
+    uint64_t value = 0;
+    for (int i = 0; i < 8; i++) value = (value << 8) | key[i];
+    return value;
 }
 
 KeySchedule buildKeySchedule(uint8_t key[8]) {

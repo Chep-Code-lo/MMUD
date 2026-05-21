@@ -63,7 +63,16 @@ __device__ __forceinline__ int bit64(uint64_t block, int b) { return (block >> (
 __device__ __forceinline__ int bit32(uint32_t block, int b) { return (block >> (32 - b)) & 1; }
 
 __device__ uint64_t keyFromIndex(uint64_t idx) {
-    return ((idx & 0x00FFFFFFFFFFFFFFULL) << 8) | 0xDDULL;
+    uint8_t bytes[8];
+    for (int byte = 7; byte >= 0; --byte) {
+        uint8_t dataBits = (uint8_t)(idx & 0x7FULL);
+        bytes[byte] = (uint8_t)((dataBits << 1) | 0x01);
+        idx >>= 7;
+    }
+
+    uint64_t keyVal = 0;
+    for (int i = 0; i < 8; i++) keyVal = (keyVal << 8) | bytes[i];
+    return keyVal;
 }
 
 __device__ uint64_t encryptDes(uint64_t plain, uint64_t keyVal) {
@@ -134,7 +143,16 @@ bool generateChainsGpu(
     if (starts.empty()) return true;
 
     int deviceCount = 0;
-    if (cudaGetDeviceCount(&deviceCount) != cudaSuccess || deviceCount <= 0) return false;
+    cudaError_t deviceErr = cudaGetDeviceCount(&deviceCount);
+    if (deviceErr != cudaSuccess) {
+        std::cerr << "  [!] CUDA khong san sang: "
+                  << cudaGetErrorString(deviceErr) << "\n";
+        return false;
+    }
+    if (deviceCount <= 0) {
+        std::cerr << "  [!] Khong tim thay NVIDIA CUDA device.\n";
+        return false;
+    }
 
     uint64_t* dStates = nullptr;
     size_t n = starts.size();

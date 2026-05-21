@@ -20,7 +20,7 @@
 #include <algorithm>
 
 static constexpr int BUILD_BATCH_CHAINS = 1 << 20;
-static constexpr uint32_t TABLE_MAGIC = 0x32425452; // RBT2, sorted endpoint->start pairs
+static constexpr uint32_t TABLE_MAGIC = 0x34425452; // RBT4, parity-safe mapping, duplicate endpoints preserved
 
 static std::string tableFileName() {
     return "rainbow_table_k" + std::to_string(KEY_BITS)
@@ -92,7 +92,7 @@ RainbowTable buildTable() {
     std::cout << "  File raw uoc tinh : ~"
               << std::fixed << std::setprecision(2) << rawFileGiB << " GiB\n";
     std::cout << "  Batch build       : " << BUILD_BATCH_CHAINS << " chains/lan\n";
-    std::cout << "  Luu y RAM         : sorted vector can gan bang file raw, it hon unordered_map\n";
+    std::cout << "  Luu y RAM         : sorted vector giu du chain, kich thuoc gan file raw\n";
 
     double cov = 1.0 - std::pow(1.0 - (double)CHAIN_LENGTH/KEY_SPACE, NUM_CHAINS);
     std::cout << "  Coverage uoc tinh : ~"
@@ -146,18 +146,26 @@ RainbowTable buildTable() {
     std::cout << "\n  [*] Dang sort endpoint de toi uu lookup...\n";
     std::sort(table.begin(), table.end(),
               [](const auto& a, const auto& b) { return a.first < b.first; });
-    auto oldSize = table.size();
-    table.erase(std::unique(table.begin(), table.end(),
-                            [](const auto& a, const auto& b) { return a.first == b.first; }),
-                table.end());
-    size_t collisions = oldSize - table.size();
+
+    size_t uniqueEndpoints = 0;
+    for (size_t i = 0; i < table.size(); ) {
+        ++uniqueEndpoints;
+        uint64_t endpoint = table[i].first;
+        do {
+            ++i;
+        } while (i < table.size() && table[i].first == endpoint);
+    }
+    size_t duplicateEndpoints = table.size() - uniqueEndpoints;
 
     double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now()-t0).count();
     std::cout << "\n  [OK] Bang xay xong trong "
               << std::fixed << std::setprecision(2) << elapsed << "s\n";
-    std::cout << "  Unique endpoints : " << table.size() << "\n";
-    std::cout << "  Collisions       : " << collisions << "\n";
-    std::cout << "  Kich thuoc bang  : ~" << table.size()*16/1024 << " KB\n";
+    std::cout << "  Entries da giu   : " << table.size() << "\n";
+    std::cout << "  Unique endpoints : " << uniqueEndpoints << "\n";
+    std::cout << "  Endpoint trung   : " << duplicateEndpoints << "\n";
+    std::cout << "  Kich thuoc bang  : ~"
+              << std::fixed << std::setprecision(2)
+              << (double)table.size()*16.0/1024.0/1024.0/1024.0 << " GiB\n";
     return table;
 }
 
@@ -252,11 +260,19 @@ std::pair<uint64_t,bool> crack(
             cur = R(H(cur), pos);
             steps++;
         }
-        auto it = std::lower_bound(table.begin(), table.end(), cur,
-                                   [](const auto& entry, uint64_t value) {
-                                       return entry.first < value;
-                                   });
-        if (it != table.end() && it->first == cur) {
+        auto first = std::lower_bound(
+            table.begin(), table.end(), cur,
+            [](const auto& entry, uint64_t value) {
+                return entry.first < value;
+            }
+        );
+        auto last = std::upper_bound(
+            first, table.end(), cur,
+            [](uint64_t value, const auto& entry) {
+                return value < entry.first;
+            }
+        );
+        for (auto it = first; it != last; ++it) {
             uint64_t k = it->second;
             for (int pos = 0; pos < CHAIN_LENGTH; pos++) {
                 uint64_t c = H(k);

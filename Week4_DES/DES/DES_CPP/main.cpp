@@ -10,6 +10,15 @@
 #include <string>
 #include <chrono>
 
+static uint64_t textToKeyIndex(const std::string& text) {
+    uint64_t hash = 1469598103934665603ULL;
+    for (unsigned char c : text) {
+        hash ^= c;
+        hash *= 1099511628211ULL;
+    }
+    return hash % KEY_SPACE;
+}
+
 static void benchmarkSpeed() {
     std::cout << "\n  [*] Do toc do DES...\n";
     const int N = 50000;
@@ -32,6 +41,10 @@ static void doAttack(uint64_t targetIdx,
     std::cout << "  PHASE 2 -- TAN CONG\n" << std::string(65,'=') << "\n";
     std::cout << "  [Victim] Key index  : " << targetIdx
               << "  (0x" << std::hex << std::uppercase << targetIdx << std::dec << ")\n";
+    std::cout << "  [Victim] DES key    : 0x"
+              << std::hex << std::uppercase << std::setw(16) << std::setfill('0')
+              << keyIndexToDesKeyValue(targetIdx)
+              << std::dec << std::setfill(' ') << "\n";
     std::cout << "  [Victim] Plaintext  : 0x"
               << std::hex << std::uppercase << PLAINTEXT << std::dec << "\n";
     std::cout << "  [Victim] Ciphertext : 0x"
@@ -49,8 +62,16 @@ static void doAttack(uint64_t targetIdx,
         std::cout << "  [OK] TIM THAY KEY!\n";
         std::cout << "     Key tim duoc : " << found
                   << "  (0x" << std::hex << std::uppercase << found << std::dec << ")\n";
+        std::cout << "     DES key      : 0x"
+                  << std::hex << std::uppercase << std::setw(16) << std::setfill('0')
+                  << keyIndexToDesKeyValue(found)
+                  << std::dec << std::setfill(' ') << "\n";
         std::cout << "     Key that     : " << targetIdx
                   << "  (0x" << std::hex << std::uppercase << targetIdx << std::dec << ")\n";
+        std::cout << "     DES key that : 0x"
+                  << std::hex << std::uppercase << std::setw(16) << std::setfill('0')
+                  << keyIndexToDesKeyValue(targetIdx)
+                  << std::dec << std::setfill(' ') << "\n";
         std::cout << "     Ket qua      : "
                   << ((found==targetIdx) ? "Trung khop hoan toan!"
                                          : "DES Equivalent Key!") << "\n";
@@ -94,19 +115,29 @@ static void demoAuto(const RainbowTable& table) {
 
 static void demoManual(const RainbowTable& table) {
     while (true) {
-        std::cout << "\n  Nhap key (0 -> " << (KEY_SPACE-1) << ", vd: 12345 hoac 0xABCD): ";
+        std::cout << "\n  Nhap key (0 -> " << (KEY_SPACE-1)
+                  << ", vd: 12345, 0xABCD, hoac chuoi text): ";
         std::string raw; std::cin >> raw;
         uint64_t keyIdx = 0;
+        bool fromText = false;
         try {
             if (raw.size()>2 && raw[0]=='0' && (raw[1]=='x'||raw[1]=='X'))
                 keyIdx = std::stoull(raw,nullptr,16);
             else
                 keyIdx = std::stoull(raw);
-        } catch (...) { std::cout << "  Key khong hop le!\n"; continue; }
+        } catch (...) {
+            keyIdx = textToKeyIndex(raw);
+            fromText = true;
+        }
         if (keyIdx >= KEY_SPACE) {
             std::cout << "  Key vuot qua key space hien tai (0 -> "
                       << (KEY_SPACE - 1) << "). Hay tang KEY_BITS trong config.h va build lai.\n";
             continue;
+        }
+        if (fromText) {
+            std::cout << "  Chuoi \"" << raw << "\" duoc map thanh key index: "
+                      << keyIdx << " (0x" << std::hex << std::uppercase
+                      << keyIdx << std::dec << ")\n";
         }
         doAttack(keyIdx, table);
         std::cout << "\n  Nhap key khac? (y/n): ";

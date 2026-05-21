@@ -7,6 +7,7 @@ struct KeySchedule {
 };
 
 void        indexToKey(uint64_t idx, uint8_t out[8]);
+uint64_t    keyIndexToDesKeyValue(uint64_t idx);
 KeySchedule buildKeySchedule(uint8_t key[8]);
 uint64_t    desEncrypt(uint64_t plaintext, const KeySchedule& ks);
 uint64_t    H(uint64_t keyIdx);
